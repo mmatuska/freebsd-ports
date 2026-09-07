@@ -1,7 +1,11 @@
 PORTNAME=	vite-plus
 DISTVERSIONPREFIX=v
-DISTVERSION=	0.2.9
+DISTVERSION=	0.3.0
 CATEGORIES=	devel
+
+VITE_HASH=	de1111ab0be00879b404e7ed3b2a80e264edddc1
+MASTER_SITES+=	https://github.com/vitejs/vite/archive/:vite_src
+DISTFILES+=	${VITE_HASH}.tar.gz:vite_src
 
 # rolldown is a PATH dependency (~48 `path = "./rolldown/crates/*"` entries in
 # the root Cargo.toml) that upstream syncs into the tree at dev time via
@@ -11,7 +15,7 @@ CATEGORIES=	devel
 # packages/tools/.upstream-versions.json.
 # GitHub serves the pinned tree at .../archive/<SHA>.tar.gz (the top-level
 # dir inside is "rolldown-<SHA>/").
-ROLLDOWN_HASH=	52dbd194ea6b6d4320706caa5f2db14b1034adaf
+ROLLDOWN_HASH=	84c904bc2e3fd126c8c32905a2597a6716a69249
 MASTER_SITES+=	https://github.com/rolldown/rolldown/archive/:rolldown_src
 DISTFILES+=	${ROLLDOWN_HASH}.tar.gz:rolldown_src
 
@@ -24,11 +28,6 @@ LICENSE=	MIT
 LICENSE_FILE=	${WRKSRC}/LICENSE
 
 USES=		cargo ssl
-
-# Single-binary port: the `vp` executable is the only file the cargo
-# framework installs (LICENSE files are auto-handled by the license machinery
-# and appear under usr/local/share/licenses/ in the stage).
-PLIST_FILES=	bin/vp
 
 USE_GITHUB=	yes
 GH_ACCOUNT=	voidzero-dev
@@ -54,10 +53,36 @@ CARGO_ENV+=	RUSTC_BOOTSTRAP=1
 CARGO_ENV+=	CARGO_UNSTABLE_BINDEPS=true
 CARGO_ENV+=	WORKSPACE_DIR=rolldown
 
+# Enable the optional "rolldown" feature on the vite-plus-cli crate so the
+# produced .node exposes the same oxc/rolldown-derived API surface as the
+# officially published binding (matches upstream's RELEASE_BUILD=1 build).
+CARGO_BUILD_ARGS+=	--features vite-plus-cli/rolldown
+
+.include <bsd.port.pre.mk>
+
+.if ${ARCH} == "amd64"
+NAPI_ARCH=	x64
+.elif ${ARCH} == "aarch64"
+NAPI_ARCH=	arm64
+.else
+IGNORE=	vite-plus native binding is not available for ${ARCH} on FreeBSD
+.endif
+
+NAPI_NODE_FILE=	vite-plus.freebsd-${NAPI_ARCH}.node
+NAPI_BINDING_DIR=	lib/node_modules/${PORTNAME}/node-modules/${PORTNAME}/binding
+
+PLIST_FILES=	bin/vp \
+		${NAPI_BINDING_DIR}/${NAPI_NODE_FILE} \
+		${NAPI_BINDING_DIR}/index.cjs \
+		${NAPI_BINDING_DIR}/index.d.ts \
+		${NAPI_BINDING_DIR}/index.d.cts \
+
+
 # The framework auto-extracts every DISTFILE into ${WRKDIR}; move the rolldown
 # tree to ${WRKSRC}/rolldown so the ./rolldown/crates/* path deps resolve.
 post-extract:
 	@${MV} ${WRKDIR}/rolldown-${ROLLDOWN_HASH} ${WRKSRC}/rolldown
+	@${MV} ${WRKDIR}/vite-${VITE_HASH} ${WRKSRC}/vite
 
 # The framework auto-applies ${PATCHDIR}/patch-* to ${WRKSRC} during do-patch.
 # The vp_js_runtime patch (files/patch-vp_js_runtime-freebsd) lives in the main
@@ -76,6 +101,22 @@ post-patch:
 	     fi; \
 	   done)
 
+post-build:
+	@${CP} ${CARGO_TARGET_DIR}/release/libvite_plus_cli.so \
+		${WRKSRC}/packages/cli/binding/${NAPI_NODE_FILE}
+	@${STRIP_CMD} ${WRKSRC}/packages/cli/binding/${NAPI_NODE_FILE}
+
+post-install:
+	@${MKDIR} ${STAGEDIR}${PREFIX}/${NAPI_BINDING_DIR}
+	@${INSTALL_DATA} ${WRKSRC}/packages/cli/binding/${NAPI_NODE_FILE} \
+		${STAGEDIR}${PREFIX}/${NAPI_BINDING_DIR}/
+	@${INSTALL_DATA} ${WRKSRC}/packages/cli/binding/index.cjs \
+		${STAGEDIR}${PREFIX}/${NAPI_BINDING_DIR}/
+	@${INSTALL_DATA} ${WRKSRC}/packages/cli/binding/index.d.ts \
+		${STAGEDIR}${PREFIX}/${NAPI_BINDING_DIR}/
+	@${INSTALL_DATA} ${WRKSRC}/packages/cli/binding/index.d.cts \
+		${STAGEDIR}${PREFIX}/${NAPI_BINDING_DIR}/
+
 # To update Makefile.crates execute: make cargo-crates > Makefile.crates
 
-.include <bsd.port.mk>
+.include <bsd.port.post.mk>
